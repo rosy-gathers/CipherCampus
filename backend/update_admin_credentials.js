@@ -4,8 +4,8 @@ const KeyManager = require('./crypto/keyManager');
 const RSA = require('./crypto/rsa');
 
 async function updateAdminCredentials() {
-    const targetEmail = 'taspihahere@gmail.com';
-    const targetPassword = 'hello123';
+    const targetEmail = 'your mail';
+    const targetPassword = 'your password';
 
     const hash = new SecureHash();
     const keyManager = new KeyManager();
@@ -63,7 +63,7 @@ async function updateAdminCredentials() {
 
         console.log(`Admin user updated (id=${adminId}).`);
         console.log(`Email: ${targetEmail}`);
-        console.log('Password: hello123');
+        console.log('Password: your password');
     } catch (error) {
         console.error('Failed to update admin credentials:', error.message);
         process.exit(1);
