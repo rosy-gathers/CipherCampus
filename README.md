@@ -137,15 +137,6 @@ npm start
 5. Send messages between two accounts to demonstrate ECC flow.
 6. Use admin account to show RBAC-protected actions.
 
-## GitHub Publishing Checklist
-
-Before pushing:
-
-- Remove real credentials from `backend/.env`
-- Ensure `.env` is ignored by Git
-- Ensure `node_modules` is not tracked
-- Include this README
-- Add screenshots (optional but recommended)
 
 Suggested screenshot paths:
 
@@ -157,8 +148,8 @@ Suggested screenshot paths:
 
 ## Team / Credits
 
-Update this section with your team member names and IDs.
+
 
 ## License
 
-Add your course/team preferred license (or leave as academic-only use).
+academic-only use
