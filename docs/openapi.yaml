@@ -1,0 +1,145 @@
+openapi: 3.0.3
+info:
+  title: CipherCampus API
+  version: 1.0.0
+  description: |
+    Secure academic collaboration API. Auth uses JWT + server-side session rows; many resources return ciphertext or integrity metadata.
+servers:
+  - url: /api
+    description: Same-origin (relative)
+paths:
+  /health:
+    get:
+      summary: Liveness probe
+      operationId: getHealth
+      responses:
+        '200':
+          description: Process is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  service: { type: string }
+                  liveness: { type: boolean }
+  /ready:
+    get:
+      summary: Readiness (MySQL + optional Redis)
+      operationId: getReady
+      responses:
+        '200':
+          description: Dependencies healthy
+        '503':
+          description: Dependency check failed
+  /auth/register:
+    post:
+      summary: Register user
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, email, password]
+              properties:
+                username: { type: string }
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '201':
+          description: Created
+        '400':
+          description: Validation or duplicate user
+  /auth/login:
+    post:
+      summary: Start login (password); sends OTP when configured
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: OTP challenge started
+        '401':
+          description: Invalid credentials
+  /posts:
+    get:
+      summary: List posts (decrypted server-side for feed)
+      operationId: listPosts
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Array of posts
+        '401':
+          description: Unauthorized
+    post:
+      summary: Create post
+      operationId: createPost
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string }
+      responses:
+        '201':
+          description: Created
+  /posts/{id}:
+    put:
+      summary: Update own post
+      operationId: updatePost
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content: { type: string }
+      responses:
+        '200':
+          description: OK
+        '403':
+          description: Not owner
+        '404':
+          description: Not found
+    delete:
+      summary: Delete own post
+      operationId: deletePost
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: OK
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

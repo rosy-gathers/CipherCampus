@@ -26,6 +26,7 @@ class RSA {
         const min = Math.pow(2, bits - 1);
         const max = Math.pow(2, bits) - 1;
         
+        // eslint-disable-next-line no-constant-condition -- intentional prime search loop
         while (true) {
             const num = Math.floor(Math.random() * (max - min + 1)) + min;
             if (num % 2 !== 0 && this.isPrime(num)) {

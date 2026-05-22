@@ -1,9 +1,11 @@
 import axios from 'axios';
+import { API_BASE_URL } from '../config/env';
 
-const API_URL = 'http://localhost:5000/api';
+const API_URL = API_BASE_URL.replace(/\/$/, '');
 
 const api = axios.create({
     baseURL: API_URL,
+    withCredentials: true,
     headers: {
         'Content-Type': 'application/json',
     },
@@ -23,13 +25,27 @@ api.interceptors.request.use(
     }
 );
 
-// Handle response errors
+function isPublicAuthPath(url) {
+    if (!url || typeof url !== 'string') return false;
+    try {
+        const pathPart = url.includes('://') ? new URL(url).pathname : url.split('?')[0];
+        const path = (pathPart || '/').replace(/\/$/, '') || '/';
+        return /^\/auth\/(login|register|verify-2fa|resend-otp)$/.test(path);
+    } catch {
+        return false;
+    }
+}
+
+// Handle response errors (do not redirect on 401 during login / OTP — those are expected failures)
 api.interceptors.response.use(
     (response) => response,
     (error) => {
-        if (error.response?.status === 401) {
+        const status = error.response?.status;
+        const reqUrl = error.config?.url || '';
+        if (status === 401 && !isPublicAuthPath(reqUrl)) {
             localStorage.removeItem('token');
             localStorage.removeItem('user');
+            localStorage.removeItem('sessionExpiresAt');
             window.location.href = '/login';
         }
         return Promise.reject(error);
@@ -47,9 +63,23 @@ export const authAPI = {
     updateProfile: (data) => api.put('/auth/profile', data),
     resetPassword: (data) => api.put('/auth/reset-password', data),
     deleteAccount: (data) => api.delete('/auth/account', { data }),
+    uploadAvatar: (file) => {
+        const fd = new FormData();
+        fd.append('avatar', file);
+        return api.post('/auth/avatar', fd, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+        });
+    },
+    deleteAvatar: () => api.delete('/auth/avatar'),
 };
 
 // Post APIs
+export const notificationAPI = {
+    list: () => api.get('/notifications'),
+    markRead: (id) => api.patch(`/notifications/${id}/read`),
+    markAllRead: () => api.post('/notifications/read-all'),
+};
+
 export const postAPI = {
     create: (data) => api.post('/posts', data),
     getAll: () => api.get('/posts'),
@@ -70,9 +100,16 @@ export const documentAPI = {
     upload: (formData) => api.post('/documents/upload', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
     }),
-    getAll: () => api.get('/documents'),
+    getAll: (params) => api.get('/documents', { params }),
+    listFolders: () => api.get('/documents/folders'),
+    createFolder: (name) => api.post('/documents/folders', { name }),
+    deleteFolder: (folderId) => api.delete(`/documents/folders/${folderId}`),
+    moveToFolder: (documentId, folderId) =>
+        api.patch(`/documents/${documentId}/folder`, { folderId }),
     delete: (id) => api.delete(`/documents/${id}`),
     download: (id) => api.get(`/documents/${id}/download`, { responseType: 'blob' }),
+    share: (documentId, userId) => api.post(`/documents/${documentId}/share`, { userId }),
+    revokeShare: (shareId) => api.delete(`/documents/shares/${shareId}`),
 };
 
 // Report APIs
