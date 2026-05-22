@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { adminAPI, reportAPI } from '../services/api';
+import { getApiErrorMessage } from '../utils/apiError';
 
 /** DB/API times are UTC; show a readable local date/time for the admin's browser. */
 function formatLastRotation(value) {
@@ -13,7 +14,6 @@ function formatLastRotation(value) {
 }
 
 const AdminPanel = () => {
-    const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
     const [users, setUsers] = useState([]);
     const [reports, setReports] = useState([]);
     const [stats, setStats] = useState(null);
@@ -62,23 +62,14 @@ const AdminPanel = () => {
     };
 
     const handleRotateKeys = async (userId) => {
-        if (Number(currentUser.id) !== Number(userId)) {
-            alert('For security, each user must rotate their own keys with their own password.');
-            return;
-        }
-
         if (window.confirm('Rotate encryption keys for this user?')) {
             try {
-                const currentPassword = window.prompt('Enter your CURRENT password to rotate your keys safely:');
-                if (!currentPassword) {
-                    return;
-                }
-                await adminAPI.rotateKeys(userId, { currentPassword });
+                await adminAPI.rotateKeys(userId, {});
                 alert('Keys rotated and data re-encrypted successfully.');
                 await loadData();
             } catch (err) {
                 console.error('Failed to rotate keys', err);
-                alert(err?.response?.data?.error || 'Failed to rotate keys safely.');
+                alert(getApiErrorMessage(err, 'Failed to rotate keys safely.'));
             }
         }
     };
@@ -163,19 +154,9 @@ const AdminPanel = () => {
                                     <td>{user.role}</td>
                                     <td>{new Date(user.created_at).toLocaleDateString()}</td>
                                     <td>
-                                        {Number(currentUser.id) === Number(user.id) ? (
-                                            <button onClick={() => handleRotateKeys(user.id)} className="rotate-btn">
-                                                🔄 Rotate My Keys
-                                            </button>
-                                        ) : (
-                                            <button
-                                                className="rotate-btn"
-                                                disabled
-                                                title="This user must rotate their own keys."
-                                            >
-                                                🔒 Self-Rotate Only
-                                            </button>
-                                        )}
+                                        <button onClick={() => handleRotateKeys(user.id)} className="rotate-btn">
+                                            🔄 Rotate Keys
+                                        </button>
                                         <button onClick={() => handleDeleteUser(user.id)} className="delete-btn">
                                             🗑️ Delete
                                         </button>

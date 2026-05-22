@@ -1,12 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { postAPI } from '../services/api';
 import { sameUserId, postAuthorDisplay } from '../utils/user';
+import { getApiErrorMessage } from '../utils/apiError';
+import UserAvatar from './UserAvatar';
 
 const Feed = () => {
     const [posts, setPosts] = useState([]);
     const [newPost, setNewPost] = useState('');
+    const [newPostTags, setNewPostTags] = useState('');
     const [editingPost, setEditingPost] = useState(null);
     const [editContent, setEditContent] = useState('');
+    const [editTags, setEditTags] = useState('');
+    const [tagFilter, setTagFilter] = useState('');
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
     const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -15,6 +20,17 @@ const Feed = () => {
         loadPosts();
     }, []);
 
+    const allTags = useMemo(() => {
+        const s = new Set();
+        posts.forEach((p) => (p.tags || []).forEach((t) => s.add(t)));
+        return Array.from(s).sort();
+    }, [posts]);
+
+    const filteredPosts = useMemo(() => {
+        if (!tagFilter) return posts;
+        return posts.filter((p) => (p.tags || []).includes(tagFilter));
+    }, [posts, tagFilter]);
+
     const loadPosts = async () => {
         try {
             setLoading(true);
@@ -22,7 +38,7 @@ const Feed = () => {
             setPosts(response.data);
             setError('');
         } catch (err) {
-            setError('Failed to load posts');
+            setError(getApiErrorMessage(err, 'Failed to load posts'));
             console.error(err);
         } finally {
             setLoading(false);
@@ -34,11 +50,12 @@ const Feed = () => {
         if (!newPost.trim()) return;
 
         try {
-            await postAPI.create({ content: newPost });
+            await postAPI.create({ content: newPost, tags: newPostTags });
             setNewPost('');
+            setNewPostTags('');
             await loadPosts();
         } catch (err) {
-            setError('Failed to create post');
+            setError(getApiErrorMessage(err, 'Failed to create post'));
         }
     };
 
@@ -46,12 +63,13 @@ const Feed = () => {
         if (!editContent.trim()) return;
 
         try {
-            await postAPI.update(id, { content: editContent });
+            await postAPI.update(id, { content: editContent, tags: editTags });
             setEditingPost(null);
             setEditContent('');
+            setEditTags('');
             await loadPosts();
         } catch (err) {
-            setError('Failed to update post');
+            setError(getApiErrorMessage(err, 'Failed to update post'));
         }
     };
 
@@ -61,14 +79,15 @@ const Feed = () => {
                 await postAPI.delete(id);
                 await loadPosts();
             } catch (err) {
-                setError('Failed to delete post');
+                setError(getApiErrorMessage(err, 'Failed to delete post'));
             }
         }
     };
 
     const startEdit = (post) => {
         setEditingPost(post.id);
-        setEditContent(post.content); 
+        setEditContent(post.content);
+        setEditTags((post.tags || []).join(', '));
     };
 
     return (
@@ -83,27 +102,67 @@ const Feed = () => {
                     <textarea
                         value={newPost}
                         onChange={(e) => setNewPost(e.target.value)}
-                        placeholder="Write your academic post here... (Will be encrypted with RSA)"
+                        placeholder="Write your academic post here… (encrypted for storage on the server)"
                         rows="4"
                     />
-                    <button type="submit" className="btn-primary">Post (encrypted)</button>
+                    <input
+                        type="text"
+                        value={newPostTags}
+                        onChange={(e) => setNewPostTags(e.target.value)}
+                        placeholder="Tags (optional, comma-separated: research, cse447, …)"
+                        style={{ marginTop: '8px' }}
+                    />
+                    <button type="submit" className="btn-primary">
+                        Post (encrypted)
+                    </button>
                 </form>
+            </div>
+
+            <div className="feed-tag-filter card-surface">
+                <span className="feed-tag-filter-label">Filter by tag</span>
+                <div className="feed-tag-chips">
+                    <button
+                        type="button"
+                        className={`feed-tag-chip ${!tagFilter ? 'is-active' : ''}`}
+                        onClick={() => setTagFilter('')}
+                    >
+                        All
+                    </button>
+                    {allTags.map((t) => (
+                        <button
+                            key={t}
+                            type="button"
+                            className={`feed-tag-chip ${tagFilter === t ? 'is-active' : ''}`}
+                            onClick={() => setTagFilter(tagFilter === t ? '' : t)}
+                        >
+                            #{t}
+                        </button>
+                    ))}
+                </div>
             </div>
 
             <div className="posts-list">
                 <h3 className="section-title">All posts</h3>
                 {loading && <div className="loading">Loading posts...</div>}
-                {error && <div className="error">{error}</div>}
-                
-                {posts.length === 0 && !loading && (
-                    <div className="no-posts">No posts yet. Be the first to share!</div>
+                {error && (
+                    <div className="error" role="alert">
+                        {error}
+                    </div>
                 )}
-                
-                {posts.map((post) => (
+
+                {filteredPosts.length === 0 && !loading && (
+                    <div className="no-posts">
+                        {posts.length === 0
+                            ? 'No posts yet. Be the first to share!'
+                            : 'No posts match this tag.'}
+                    </div>
+                )}
+
+                {filteredPosts.map((post) => (
                     <article key={post.id} className="post-card card-surface">
                         <div className="post-header">
                             <span className="post-author">
-                                <span className="avatar-chip" aria-hidden>👤</span>
+                                <UserAvatar userId={post.user_id} label={post.username} size={36} />
                                 <strong>{postAuthorDisplay(post, user)}</strong>
                                 {sameUserId(post.user_id, user.id) && (
                                     <span className="you-badge">You</span>
@@ -113,7 +172,22 @@ const Feed = () => {
                                 {new Date(post.created_at).toLocaleString()}
                             </span>
                         </div>
-                        
+
+                        {(post.tags || []).length > 0 && (
+                            <div className="post-tags-row">
+                                {(post.tags || []).map((t) => (
+                                    <button
+                                        key={t}
+                                        type="button"
+                                        className="post-tag-pill"
+                                        onClick={() => setTagFilter(tagFilter === t ? '' : t)}
+                                    >
+                                        #{t}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+
                         {editingPost === post.id ? (
                             <div className="post-edit">
                                 <textarea
@@ -121,28 +195,45 @@ const Feed = () => {
                                     onChange={(e) => setEditContent(e.target.value)}
                                     rows="3"
                                 />
+                                <input
+                                    type="text"
+                                    value={editTags}
+                                    onChange={(e) => setEditTags(e.target.value)}
+                                    placeholder="Tags (comma-separated)"
+                                    style={{ marginTop: '8px' }}
+                                />
                                 <div className="edit-actions">
-                                    <button onClick={() => handleUpdatePost(post.id)}>Save</button>
-                                    <button onClick={() => setEditingPost(null)}>Cancel</button>
+                                    <button type="button" onClick={() => handleUpdatePost(post.id)}>
+                                        Save
+                                    </button>
+                                    <button type="button" onClick={() => setEditingPost(null)}>
+                                        Cancel
+                                    </button>
                                 </div>
                             </div>
                         ) : (
                             <div className="post-content">
                                 <p>{post.content}</p>
                                 {post.validIntegrity === false ? (
-                                    <div className="post-badge error-badge">⚠️ HMAC integrity failed</div>
+                                    <div className="post-badge error-badge">
+                                        ⚠️ HMAC integrity failed
+                                    </div>
                                 ) : (
                                     <div className="post-badge">🔒 Decrypted · integrity verified</div>
                                 )}
                             </div>
                         )}
-                        
+
                         {(sameUserId(post.user_id, user.id) || user.role === 'admin') && !editingPost && (
                             <div className="post-actions">
                                 {sameUserId(post.user_id, user.id) && (
-                                    <button onClick={() => startEdit(post)}>✏️ Edit</button>
+                                    <button type="button" onClick={() => startEdit(post)}>
+                                        ✏️ Edit
+                                    </button>
                                 )}
-                                <button onClick={() => handleDeletePost(post.id)}>🗑️ Delete</button>
+                                <button type="button" onClick={() => handleDeletePost(post.id)}>
+                                    🗑️ Delete
+                                </button>
                             </div>
                         )}
                     </article>

@@ -17,6 +17,7 @@ yarn-error.log*
 
 # Runtime artifacts
 backend/uploads/
+# System RSA keypair — generate locally on first API start; never commit private key.
 backend/config/system_rsa_private.json
 backend/config/system_rsa_public.json
 
@@ -25,6 +26,11 @@ backend/config/system_rsa_public.json
 Thumbs.db
 .vscode/
 .idea/
+.cursor/
+
+# Test artifacts
+frontend/test-results/
+playwright-report/
 
 # Build outputs
 frontend/build/

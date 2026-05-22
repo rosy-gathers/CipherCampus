@@ -1,0 +1,21 @@
+name: Dependency audit
+
+on:
+  schedule:
+    - cron: '0 12 * * 1'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Backend audit
+        working-directory: backend
+        run: npm ci 2>/dev/null || npm install; npm audit --audit-level=high || true
+      - name: Frontend audit
+        working-directory: frontend
+        run: npm ci 2>/dev/null || npm install; npm audit --audit-level=high || true

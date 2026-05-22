@@ -1,0 +1,26 @@
+# Render Blueprint (starter): https://render.com/docs/blueprint-spec
+# Replace placeholders and add a managed MySQL + Redis; wire env from dashboard.
+services:
+  - type: web
+    name: ciphercampus-api
+    runtime: node
+    region: oregon
+    plan: starter
+    rootDir: ./backend
+    buildCommand: npm ci && npm run lint --if-present
+    startCommand: npx knex migrate:latest && node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 5000
+      # Set in dashboard: DB_*, JWT_SECRET (32+ chars), FRONTEND_ORIGIN, REDIS_URL, EMAIL_*
+
+  - type: static
+    name: ciphercampus-web
+    rootDir: ./frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: build
+    envVars:
+      - key: REACT_APP_API_URL
+        sync: false

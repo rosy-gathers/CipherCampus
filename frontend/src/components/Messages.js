@@ -1,9 +1,11 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { messageAPI } from '../services/api';
 import { sameUserId } from '../utils/user';
+import { getApiErrorMessage } from '../utils/apiError';
 
 const POLL_MS = 2200;
 const CONV_POLL_MS = 4000;
+const MAX_PICKER_RESULTS = 40;
 
 const Messages = () => {
     const [conversations, setConversations] = useState([]);
@@ -13,6 +15,9 @@ const Messages = () => {
     const [newMessage, setNewMessage] = useState('');
     const [loading, setLoading] = useState(false);
     const [sending, setSending] = useState(false);
+    const [peopleQuery, setPeopleQuery] = useState('');
+    const [listError, setListError] = useState('');
+    const [threadError, setThreadError] = useState('');
     const messagesEndRef = useRef(null);
     const skipScrollRef = useRef(false);
     const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -25,7 +30,9 @@ const Messages = () => {
         try {
             const response = await messageAPI.getConversations();
             setConversations(response.data);
+            setListError('');
         } catch (err) {
+            setListError(getApiErrorMessage(err, 'Failed to load conversations.'));
             console.error('Failed to load conversations', err);
         }
     }, []);
@@ -34,17 +41,28 @@ const Messages = () => {
         try {
             const response = await messageAPI.getAllUsers();
             setAllUsers(response.data);
+            setListError('');
         } catch (err) {
+            setListError(getApiErrorMessage(err, 'Failed to load directory.'));
             console.error('Failed to load all users', err);
         }
     }, []);
 
-    /**
-     * @param {number} userId
-     * @param {{ silent?: boolean; scrollToEnd?: boolean }} opts
-     * silent: no full-panel loading spinner (for polling / quick refresh)
-     * scrollToEnd: override auto-scroll (after send we scroll; background poll we don't)
-     */
+    const filteredUsers = useMemo(() => {
+        const q = peopleQuery.trim().toLowerCase();
+        let list = allUsers;
+        if (q) {
+            list = list.filter((u) => u.username.toLowerCase().includes(q));
+        }
+        return list.slice(0, MAX_PICKER_RESULTS);
+    }, [allUsers, peopleQuery]);
+
+    const filteredConversations = useMemo(() => {
+        const q = peopleQuery.trim().toLowerCase();
+        if (!q) return conversations;
+        return conversations.filter((c) => c.other_username.toLowerCase().includes(q));
+    }, [conversations, peopleQuery]);
+
     const loadMessages = useCallback(async (userId, opts = {}) => {
         const silent = opts.silent === true;
         const scrollToEnd =
@@ -55,7 +73,9 @@ const Messages = () => {
             const response = await messageAPI.getMessages(userId);
             if (!scrollToEnd) skipScrollRef.current = true;
             setMessages(response.data);
+            setThreadError('');
         } catch (err) {
+            setThreadError(getApiErrorMessage(err, 'Failed to load messages.'));
             console.error('Failed to load messages', err);
         } finally {
             if (!silent) setLoading(false);
@@ -73,7 +93,6 @@ const Messages = () => {
         }
     }, [selectedUser, loadMessages]);
 
-    /** Poll thread while chat is open — no manual refresh needed */
     useEffect(() => {
         if (!selectedUser) return undefined;
 
@@ -86,7 +105,6 @@ const Messages = () => {
         return () => clearInterval(id);
     }, [selectedUser, loadMessages]);
 
-    /** Refresh conversation list periodically so new threads appear */
     useEffect(() => {
         const id = setInterval(() => {
             if (document.hidden) return;
@@ -103,14 +121,14 @@ const Messages = () => {
         scrollToBottom();
     }, [messages]);
 
-    const handleSendMessage = async (e) => {
-        e.preventDefault();
+    const sendCurrentMessage = async () => {
         if (!newMessage.trim() || !selectedUser || sending) return;
 
         const text = newMessage.trim();
         const receiverId = selectedUser.id;
 
         setSending(true);
+        setThreadError('');
         try {
             await messageAPI.send({
                 receiverId,
@@ -120,9 +138,22 @@ const Messages = () => {
             await loadMessages(receiverId, { silent: true, scrollToEnd: true });
             await loadConversations();
         } catch (err) {
+            setThreadError(getApiErrorMessage(err, 'Failed to send message.'));
             console.error('Failed to send message', err);
         } finally {
             setSending(false);
+        }
+    };
+
+    const handleSendMessage = (e) => {
+        e.preventDefault();
+        sendCurrentMessage();
+    };
+
+    const handleComposerKeyDown = (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendCurrentMessage();
         }
     };
 
@@ -136,7 +167,8 @@ const Messages = () => {
                 <div className="messages-header-main">
                     <h1>Secure messaging</h1>
                     <p>
-                        Messages are encrypted with ECC; HMAC checks detect tampering.
+                        Messages are encrypted with ECC; HMAC checks detect tampering. Emoji and Unicode are supported
+                        when the database uses utf8mb4.
                         <span className="poll-hint"> Updates automatically every few seconds.</span>
                     </p>
                 </div>
@@ -145,27 +177,50 @@ const Messages = () => {
             <div className="messages-layout">
                 <div className="conversations-list">
                     <div className="new-chat-section">
-                        <h4>Start a new chat</h4>
-                        <select
-                            onChange={(e) => {
-                                if (!e.target.value) return;
-                                const u = allUsers.find((x) => x.id === parseInt(e.target.value, 10));
-                                if (u) selectConversation(u);
-                                e.target.value = '';
-                            }}
-                        >
-                            <option value="">Select a user...</option>
-                            {allUsers.map((u) => (
-                                <option key={u.id} value={u.id}>{u.username}</option>
+                        <h4>Find people</h4>
+                        <label htmlFor="people-search" className="sr-only">
+                            Search people by name
+                        </label>
+                        <input
+                            id="people-search"
+                            type="search"
+                            className="people-search-input"
+                            placeholder="Search name…"
+                            value={peopleQuery}
+                            onChange={(e) => setPeopleQuery(e.target.value)}
+                            autoComplete="off"
+                        />
+                        <p className="people-picker-hint">Start a new chat</p>
+                        <ul className="people-picker-list" aria-label="Matching users">
+                            {filteredUsers.length === 0 && (
+                                <li className="people-picker-empty">No matching users</li>
+                            )}
+                            {filteredUsers.map((u) => (
+                                <li key={u.id}>
+                                    <button
+                                        type="button"
+                                        className="people-picker-item"
+                                        onClick={() => selectConversation(u)}
+                                    >
+                                        {u.username}
+                                    </button>
+                                </li>
                             ))}
-                        </select>
+                        </ul>
                     </div>
 
                     <h3>Conversations</h3>
-                    {conversations.length === 0 && (
-                        <div className="no-conversations">No past conversations</div>
+                    {listError && (
+                        <div className="error" role="alert">
+                            {listError}
+                        </div>
                     )}
-                    {conversations.map((conv) => (
+                    {filteredConversations.length === 0 && !listError && (
+                        <div className="no-conversations">
+                            {peopleQuery.trim() ? 'No conversations match your search.' : 'No past conversations'}
+                        </div>
+                    )}
+                    {filteredConversations.map((conv) => (
                         <div
                             key={conv.other_user_id}
                             className={`conversation-item ${selectedUser && sameUserId(selectedUser.id, conv.other_user_id) ? 'active' : ''}`}
@@ -194,6 +249,11 @@ const Messages = () => {
                             </div>
 
                             <div className="messages-list">
+                                {threadError && (
+                                    <div className="error" role="alert">
+                                        {threadError}
+                                    </div>
+                                )}
                                 {loading && <div className="loading">Loading messages…</div>}
                                 {!loading &&
                                     messages.map((msg) => (
@@ -202,7 +262,7 @@ const Messages = () => {
                                             className={`message ${sameUserId(msg.sender_id, user.id) ? 'sent' : 'received'}`}
                                         >
                                             <div className="message-content">
-                                                <p>{msg.message}</p>
+                                                <p style={{ whiteSpace: 'pre-wrap' }}>{msg.message}</p>
                                             </div>
                                             <div className="message-time">
                                                 {new Date(msg.timestamp).toLocaleTimeString()}
@@ -229,13 +289,15 @@ const Messages = () => {
 
                             <form onSubmit={handleSendMessage} className="message-composer" autoComplete="off">
                                 <label className="sr-only" htmlFor="msg-input">Message</label>
-                                <input
+                                <textarea
                                     id="msg-input"
-                                    type="text"
+                                    className="message-composer-textarea"
                                     value={newMessage}
                                     onChange={(e) => setNewMessage(e.target.value)}
-                                    placeholder="Type a message…"
+                                    onKeyDown={handleComposerKeyDown}
+                                    placeholder="Type a message… (Enter to send, Shift+Enter for new line)"
                                     disabled={sending}
+                                    rows={2}
                                     autoComplete="off"
                                 />
                                 <button type="submit" className="send-btn" disabled={sending || !newMessage.trim()}>
@@ -245,7 +307,7 @@ const Messages = () => {
                         </>
                     ) : (
                         <div className="no-chat-selected">
-                            <p>Select a conversation to start messaging</p>
+                            <p>Select a conversation or search for someone to start messaging</p>
                             <p className="security-note">All messages are encrypted with ECC (Elliptic Curve Cryptography)</p>
                         </div>
                     )}

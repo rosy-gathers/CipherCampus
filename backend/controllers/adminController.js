@@ -1,5 +1,6 @@
 const db = require('../config/database');
 const KeyManager = require('../crypto/keyManager');
+const { encryptPostEnvelope, decryptStoredContent } = require('../crypto/postEnvelope');
 const RSA = require('../crypto/rsa');
 const ECC = require('../crypto/ecc');
 const HMAC = require('../crypto/hmac');
@@ -115,19 +116,12 @@ const getSystemStats = async (req, res) => {
 
 const rotateUserKeys = async (req, res) => {
     const { userId } = req.params;
-    const { currentPassword } = req.body || {};
     const uid = Number(userId);
     
     try {
-        // Admins should not know other users' passwords; key rotation is self-service per account.
-        if (Number(req.user.id) !== uid) {
-            return res.status(403).json({
-                error: 'Users must rotate their own keys using their own current password.'
-            });
-        }
-
-        if (!currentPassword) {
-            return res.status(400).json({ error: 'Current password is required to rotate keys safely.' });
+        // Route-level admin middleware protects this endpoint. Keep an explicit guard for defense-in-depth.
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Access denied. Admin only.' });
         }
 
         const conn = await db.getConnection();
@@ -146,20 +140,15 @@ const rotateUserKeys = async (req, res) => {
                 return res.status(404).json({ error: 'User not found.' });
             }
             const user = users[0];
-            const verify = keyManager.hash.verifyPassword(currentPassword, user.password_hash, user.password_salt);
-            if (!verify) {
-                await conn.rollback();
-                return res.status(401).json({ error: 'Invalid current password.' });
-            }
 
-            const oldRsaPrivate = keyManager.decryptPrivateKey(user.rsa_private_key_encrypted, currentPassword);
-            const oldEccPrivate = keyManager.decryptPrivateKey(user.ecc_private_key_encrypted, currentPassword);
+            const oldRsaPrivate = keyManager.decryptPrivateKey(user.rsa_private_key_encrypted);
+            const oldEccPrivate = keyManager.decryptPrivateKey(user.ecc_private_key_encrypted);
             // Generate new keypairs
             const newKeys = keyManager.generateUserKeys();
             const newRsaPublic = newKeys.rsa.publicKey;
             const newEccPublic = newKeys.ecc.publicKey;
-            const newRsaPrivateEncrypted = keyManager.encryptPrivateKey(newKeys.rsa.privateKey, currentPassword);
-            const newEccPrivateEncrypted = keyManager.encryptPrivateKey(newKeys.ecc.privateKey, currentPassword);
+            const newRsaPrivateEncrypted = keyManager.encryptPrivateKey(newKeys.rsa.privateKey);
+            const newEccPrivateEncrypted = keyManager.encryptPrivateKey(newKeys.ecc.privateKey);
 
             // Re-encrypt email (encrypted with user's RSA public key)
             let plaintextEmail = null;
@@ -179,8 +168,8 @@ const rotateUserKeys = async (req, res) => {
             for (const doc of docs) {
                 if (!fs.existsSync(doc.encrypted_file_path)) continue;
                 const encContent = fs.readFileSync(doc.encrypted_file_path, 'utf8');
-                const plainBase64 = rsa.decrypt(encContent, oldRsaPrivate);
-                const newEncContent = rsa.encrypt(plainBase64, newRsaPublic);
+                const plainBase64 = decryptStoredContent(encContent, oldRsaPrivate);
+                const newEncContent = encryptPostEnvelope(plainBase64, newRsaPublic);
                 fs.writeFileSync(doc.encrypted_file_path, newEncContent, 'utf8');
             }
 

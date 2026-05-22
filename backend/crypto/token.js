@@ -1,78 +1,41 @@
-// Lightweight signed-token module that replaces `jsonwebtoken`.
-// The signature uses the from-scratch HMAC-SHA-256 in `crypto/hmac.js`,
-// so no built-in framework crypto is required to issue or verify tokens.
-//
-// Token format:
-//     base64url(JSON payload) + "." + HMAC-SHA-256(payload, secret)
-//
-// The hex digest is appended directly (no base64) because the HMAC class
-// already returns a hex string. The interface mirrors what the previous
-// jsonwebtoken usage relied on (`{ userId, iat, exp, jti }`).
+const jwt = require('jsonwebtoken');
 
-const HMAC = require('./hmac');
-
-const DEFAULT_SECRET = 'ciphercampus_super_secret_key_2026';
-const DEFAULT_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes, matches old JWT_EXPIRY
+const DEFAULT_EXPIRY = '5m';
 
 function getSecret() {
-    return process.env.JWT_SECRET || DEFAULT_SECRET;
+    const s = process.env.JWT_SECRET;
+    if (process.env.NODE_ENV === 'production') {
+        if (!s || String(s).length < 32) {
+            throw new Error('JWT_SECRET must be set to a random string of at least 32 characters in production.');
+        }
+    }
+    return s || 'dev_only_jwt_secret_change_in_env';
 }
 
-function base64UrlEncode(str) {
-    return Buffer.from(str, 'utf8')
-        .toString('base64')
-        .replace(/=+$/g, '')
-        .replace(/\+/g, '-')
-        .replace(/\//g, '_');
-}
-
-function base64UrlDecode(str) {
-    let padded = String(str).replace(/-/g, '+').replace(/_/g, '/');
-    while (padded.length % 4 !== 0) padded += '=';
-    return Buffer.from(padded, 'base64').toString('utf8');
-}
-
-function sign(encodedPayload) {
-    const hmac = new HMAC(getSecret());
-    return hmac.generateHMAC(encodedPayload);
-}
-
+/**
+ * Standard signed JWT (HS256). Replaces the prior custom HMAC token format.
+ */
 function generateToken(userId, options = {}) {
-    const now = Date.now();
     const payload = {
         userId: Number(userId),
-        iat: now,
-        exp: now + (options.expiresInMs || DEFAULT_EXPIRY_MS),
-        jti: options.jti || ''
+        jti: options.jti || '',
     };
-    const encoded = base64UrlEncode(JSON.stringify(payload));
-    const signature = sign(encoded);
-    return `${encoded}.${signature}`;
+    return jwt.sign(payload, getSecret(), {
+        expiresIn: options.expiresIn || DEFAULT_EXPIRY,
+    });
 }
 
+/**
+ * Returns normalized payload: userId, iat/exp in milliseconds (for any legacy comparisons).
+ */
 function verifyToken(token) {
-    if (!token || typeof token !== 'string') {
-        throw new Error('Invalid token.');
-    }
-    const parts = token.split('.');
-    if (parts.length !== 2 || !parts[0] || !parts[1]) {
-        throw new Error('Invalid token format.');
-    }
-    const [encoded, signature] = parts;
-    const expected = sign(encoded);
-    if (signature !== expected) {
-        throw new Error('Invalid token signature.');
-    }
-    let payload;
-    try {
-        payload = JSON.parse(base64UrlDecode(encoded));
-    } catch (e) {
-        throw new Error('Invalid token payload.');
-    }
-    if (payload.exp && Date.now() > Number(payload.exp)) {
-        throw new Error('Token expired.');
-    }
-    return payload;
+    const payload = jwt.verify(token, getSecret());
+    return {
+        userId: Number(payload.userId),
+        iat: (payload.iat || 0) * 1000,
+        exp: (payload.exp || 0) * 1000,
+        jti: payload.jti || '',
+    };
 }
 
 module.exports = { generateToken, verifyToken };

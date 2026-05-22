@@ -1,23 +1,37 @@
+const crypto = require('crypto');
 const db = require('../config/database');
 const { generateToken, hashToken, getClientIp, getUserAgentSignature } = require('../middleware/auth');
 const SecureHash = require('../crypto/hash');
 const KeyManager = require('../crypto/keyManager');
 const sessionVault = require('../crypto/sessionVault');
 const systemKeys = require('../crypto/systemKeys');
-const nodemailer = require('nodemailer');
+const otpStore = require('../services/otpStore');
+const logger = require('../logger');
+const { dispatchOtpEmail } = require('../services/emailDispatch');
 const RSA = require('../crypto/rsa');
+const HMAC = require('../crypto/hmac');
+const { encryptPostEnvelope, decryptStoredContent } = require('../crypto/postEnvelope');
+const multer = require('multer');
+const path = require('path');
 const fs = require('fs');
 require('dotenv').config();
 
-// Non-cryptographic unique identifier for the token's `jti` claim.
-// Uniqueness is sufficient here; no cryptographic randomness needed because
-// the token signature itself binds the payload to the server secret.
-const generateJti = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}-${Math.random().toString(36).slice(2, 10)}`;
+const generateJti = () => crypto.randomBytes(16).toString('hex');
 
 const hash = new SecureHash();
 const keyManager = new KeyManager();
 const rsa = new RSA();
+const avatarHmac = new HMAC(process.env.HMAC_SECRET || 'ciphercampus_document_secret');
 let profileColumnsReadyPromise = null;
+
+const avatarUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 512 * 1024 },
+    fileFilter: (req, file, cb) => {
+        const ok = /^image\/(jpeg|png|gif|webp)$/.test(file.mimetype);
+        cb(ok ? null : new Error('Only JPEG, PNG, GIF, or WebP images are allowed.'), ok);
+    },
+});
 
 async function ensureExtendedProfileColumns() {
     if (!profileColumnsReadyPromise) {
@@ -30,29 +44,14 @@ async function ensureExtendedProfileColumns() {
             } catch (e) {
                 // If DB doesn't support IF NOT EXISTS syntax, fall back silently.
                 // In that case, missing-column errors will still be visible in logs.
-                console.error('Profile column migration warning:', e.message);
+                logger.warn({ err: e.message }, 'Profile column migration warning');
             }
         })();
     }
     return profileColumnsReadyPromise;
 }
 
-// Setup Nodemailer
-const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
-    }
-});
-
-// Store OTPs temporarily (in production, use Redis)
-const otpStore = new Map();
-
-// Generate random OTP
-const generateOTP = () => {
-    return Math.floor(100000 + Math.random() * 900000).toString();
-};
+const generateOTP = () => crypto.randomInt(100000, 1000000).toString();
 const RESEND_COOLDOWN_MS = 30 * 1000;
 const SESSION_DURATION_MS = 5 * 60 * 1000;
 
@@ -69,7 +68,7 @@ const register = async (req, res) => {
             bio = ''
         } = req.body;
         
-        console.log('Registration attempt for:', username);
+        logger.info({ username }, 'Registration attempt');
 
         const usernameHash = hash.simpleHash(username.toLowerCase());
         const emailHash = hash.simpleHash(email.toLowerCase());
@@ -84,15 +83,14 @@ const register = async (req, res) => {
             return res.status(400).json({ error: 'Username or email already exists.' });
         }
         
-        // Hash password with salt (from scratch)
-        const { hash: passwordHash, salt: passwordSalt } = hash.hashPassword(password);
+        const { hash: passwordHash, salt: passwordSalt } = await hash.hashPassword(password);
         
         // Generate encryption keys (RSA + ECC)
         const keys = keyManager.generateUserKeys();
         
-        // Encrypt private keys with password
-        const encryptedRSAPrivateKey = keyManager.encryptPrivateKey(keys.rsa.privateKey, password);
-        const encryptedECCPrivateKey = keyManager.encryptPrivateKey(keys.ecc.privateKey, password);
+        // Encrypt private keys using asymmetric wrapping (system RSA).
+        const encryptedRSAPrivateKey = keyManager.encryptPrivateKey(keys.rsa.privateKey);
+        const encryptedECCPrivateKey = keyManager.encryptPrivateKey(keys.ecc.privateKey);
         
         // Encrypt username using System RSA public key, email with personal key
         const encryptedUsername = rsa.encrypt(username, systemKeys.getPublicKey());
@@ -118,13 +116,13 @@ const register = async (req, res) => {
             ]
         );
         
-        console.log('User registered successfully:', username);
+        logger.info({ username }, 'User registered');
         res.status(201).json({ 
             message: 'Registration successful. Please login.',
             userId: result.insertId 
         });
     } catch (error) {
-        console.error('Registration error:', error);
+        logger.error({ err: error }, 'Registration error');
         res.status(500).json({ error: 'Registration failed: ' + error.message });
     }
 };
@@ -133,7 +131,7 @@ const login = async (req, res) => {
     try {
         const { username, password } = req.body;
         
-        console.log('Login attempt for:', username);
+        logger.info({ username }, 'Login attempt');
 
         const inputHash = hash.simpleHash(username.toLowerCase());
         
@@ -149,21 +147,20 @@ const login = async (req, res) => {
         
         const user = users[0];
         
-        // Verify password
-        const isValid = hash.verifyPassword(password, user.password_hash, user.password_salt);
+        const isValid = await hash.verifyPassword(password, user.password_hash, user.password_salt);
         
         if (!isValid) {
             return res.status(401).json({ error: 'Invalid credentials.' });
         }
         
-        // Unlock private keys using the password
+        // Unlock private keys (stored with asymmetric wrapping).
         let rsaPrivateKey;
         let eccPrivateKey;
         try {
-            rsaPrivateKey = keyManager.decryptPrivateKey(user.rsa_private_key_encrypted, password);
-            eccPrivateKey = keyManager.decryptPrivateKey(user.ecc_private_key_encrypted, password);
+            rsaPrivateKey = keyManager.decryptPrivateKey(user.rsa_private_key_encrypted);
+            eccPrivateKey = keyManager.decryptPrivateKey(user.ecc_private_key_encrypted);
         } catch (decryptError) {
-            console.error('Failed to unlock private keys during login:', decryptError.message);
+            logger.warn({ err: decryptError.message }, 'Failed to unlock private keys during login');
             return res.status(401).json({ error: 'Invalid credentials.' });
         }
 
@@ -172,49 +169,48 @@ const login = async (req, res) => {
         try {
             actualEmail = rsa.decrypt(user.encrypted_email, rsaPrivateKey);
         } catch(e) {
-            console.error('Failed to decrypt email', e);
+            logger.warn({ err: e.message }, 'Failed to decrypt email');
             actualEmail = "unknown"; // Fallback for testing if decryption fails
         }
 
         // Generate OTP for 2FA
         const otp = generateOTP();
         
-        // Store OTP and unlocked keys temporarily
-        otpStore.set(user.id, {
-            otp, 
+        await otpStore.setChallenge(user.id, {
+            otp,
             expires: Date.now() + 10 * 60 * 1000,
             keys: { rsaPrivateKey, eccPrivateKey },
             email: actualEmail,
-            lastSentAt: Date.now()
+            lastSentAt: Date.now(),
         });
         
-        // Send OTP via Email
+        // Send OTP via Email (required for login completion).
         if (actualEmail !== "unknown") {
             try {
-                await transporter.sendMail({
-                    from: process.env.EMAIL_USER,
+                await dispatchOtpEmail({
                     to: actualEmail,
                     subject: 'CipherCampus Login OTP',
                     text: `Your OTP for login is: ${otp}. It will expire in 10 minutes.`
                 });
-                console.log(`OTP sent to email: ${actualEmail}`);
+                logger.info('OTP email sent');
             } catch (emailError) {
-                console.error('Failed to send email:', emailError);
-                // Fallback to console for debugging if email config is missing
-                console.log(`🔐 TEST OTP for ${user.id}: ${otp}`);
+                logger.error({ err: emailError.message }, 'Failed to send email');
+                await otpStore.deleteChallenge(user.id);
+                return res.status(500).json({ error: 'Failed to send OTP email. Please verify email configuration.' });
             }
         } else {
-             console.log(`🔐 TEST OTP for ${user.id}: ${otp}`);
+            await otpStore.deleteChallenge(user.id);
+            return res.status(500).json({ error: 'Could not resolve a valid email for OTP delivery.' });
         }
 
-        res.json({ 
+        res.json({
             message: 'OTP sent to your email.',
             userId: user.id,
             requires2FA: true,
             resendInSeconds: 30
         });
     } catch (error) {
-        console.error('Login error:', error);
+        logger.error({ err: error }, 'Login error');
         res.status(500).json({ error: 'Login failed. Please try again.' });
     }
 };
@@ -228,13 +224,13 @@ const resendOTP = async (req, res) => {
             return res.status(400).json({ error: 'User ID is required.' });
         }
 
-        const stored = otpStore.get(parsedUserId);
+        const stored = await otpStore.getChallenge(parsedUserId);
         if (!stored) {
             return res.status(401).json({ error: '2FA session expired. Please login again.' });
         }
 
         if (Date.now() > stored.expires) {
-            otpStore.delete(parsedUserId);
+            await otpStore.deleteChallenge(parsedUserId);
             return res.status(401).json({ error: 'OTP expired. Please login again.' });
         }
 
@@ -252,23 +248,22 @@ const resendOTP = async (req, res) => {
         stored.otp = otp;
         stored.expires = now + 10 * 60 * 1000;
         stored.lastSentAt = now;
-        otpStore.set(parsedUserId, stored);
+        await otpStore.setChallenge(parsedUserId, stored);
 
         if (stored.email && stored.email !== "unknown") {
             try {
-                await transporter.sendMail({
-                    from: process.env.EMAIL_USER,
+                await dispatchOtpEmail({
                     to: stored.email,
                     subject: 'CipherCampus Login OTP (Resent)',
                     text: `Your new OTP for login is: ${otp}. It will expire in 10 minutes.`
                 });
-                console.log(`Resent OTP to email: ${stored.email}`);
+                logger.info('OTP resent');
             } catch (emailError) {
-                console.error('Failed to resend email:', emailError);
-                console.log(`🔐 TEST OTP (resent) for ${parsedUserId}: ${otp}`);
+                logger.error({ err: emailError.message }, 'Failed to resend email');
+                return res.status(500).json({ error: 'Failed to resend OTP email. Please verify email configuration.' });
             }
         } else {
-            console.log(`🔐 TEST OTP (resent) for ${parsedUserId}: ${otp}`);
+            return res.status(500).json({ error: 'Could not resolve a valid email for OTP resend.' });
         }
 
         res.json({
@@ -276,7 +271,7 @@ const resendOTP = async (req, res) => {
             resendInSeconds: 30
         });
     } catch (error) {
-        console.error('Resend OTP error:', error);
+        logger.error({ err: error }, 'Resend OTP error');
         res.status(500).json({ error: 'Failed to resend OTP.' });
     }
 };
@@ -285,14 +280,14 @@ const verify2FA = async (req, res) => {
     try {
         const { userId, otp } = req.body;
         
-        const stored = otpStore.get(parseInt(userId));
-        
+        const stored = await otpStore.getChallenge(parseInt(userId, 10));
+
         if (!stored) {
             return res.status(401).json({ error: '2FA session expired. Please login again.' });
         }
-        
+
         if (Date.now() > stored.expires) {
-            otpStore.delete(parseInt(userId));
+            await otpStore.deleteChallenge(parseInt(userId, 10));
             return res.status(401).json({ error: 'OTP expired. Please login again.' });
         }
         
@@ -305,7 +300,7 @@ const verify2FA = async (req, res) => {
         const tokenHash = hashToken(token);
         
         // Store unlocked keys in session vault
-        sessionVault.storeKeys(userId, stored.keys);
+        sessionVault.storeKeys(Number(userId), stored.keys);
 
         // Store session in database
         const expiresAt = new Date(Date.now() + SESSION_DURATION_MS);
@@ -323,8 +318,8 @@ const verify2FA = async (req, res) => {
             [userId]
         );
         
-        otpStore.delete(parseInt(userId));
-        
+        await otpStore.deleteChallenge(parseInt(userId, 10));
+
         // Decrypt username and email to send to frontend
         let actualUsername = "User";
         try {
@@ -334,7 +329,7 @@ const verify2FA = async (req, res) => {
         }
         const actualEmail = rsa.decrypt(users[0].encrypted_email, stored.keys.rsaPrivateKey);
 
-        console.log('User logged in:', actualUsername);
+        logger.info({ userId, username: actualUsername }, 'User logged in');
 
         res.cookie('accessToken', token, {
             httpOnly: true,
@@ -355,7 +350,7 @@ const verify2FA = async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('2FA verification error:', error);
+        logger.error({ err: error }, '2FA verification error');
         res.status(500).json({ error: 'Verification failed: ' + error.message });
     }
 };
@@ -374,7 +369,7 @@ const logout = async (req, res) => {
         res.clearCookie('accessToken');
         res.json({ message: 'Logged out successfully.' });
     } catch (error) {
-        console.error('Logout error:', error);
+        logger.error({ err: error }, 'Logout error');
         res.status(500).json({ error: 'Logout failed.' });
     }
 };
@@ -383,7 +378,8 @@ const getProfile = async (req, res) => {
     try {
         await ensureExtendedProfileColumns();
         const [users] = await db.query(
-            `SELECT id, encrypted_username, encrypted_full_name, encrypted_email, encrypted_phone, encrypted_department, encrypted_bio, role, created_at
+            `SELECT id, encrypted_username, encrypted_full_name, encrypted_email, encrypted_phone, encrypted_department, encrypted_bio, role, created_at,
+                    avatar_cipher_path
              FROM users WHERE id = ?`,
             [req.user.id]
         );
@@ -426,10 +422,11 @@ const getProfile = async (req, res) => {
             department: actualDepartment,
             bio: actualBio,
             role: users[0].role,
-            created_at: users[0].created_at
+            created_at: users[0].created_at,
+            hasAvatar: Boolean(users[0].avatar_cipher_path),
         });
     } catch (error) {
-        console.error('Profile error:', error);
+        logger.error({ err: error }, 'Profile error');
         res.status(500).json({ error: 'Failed to get profile.' });
     }
 };
@@ -468,7 +465,7 @@ const updateProfile = async (req, res) => {
         
         res.json({ message: 'Profile updated successfully.' });
     } catch (error) {
-        console.error('Update profile error:', error);
+        logger.error({ err: error }, 'Update profile error');
         res.status(500).json({ error: 'Failed to update profile.' });
     }
 };
@@ -489,7 +486,7 @@ const resetPassword = async (req, res) => {
         }
 
         const user = users[0];
-        const ok = hash.verifyPassword(currentPassword, user.password_hash, user.password_salt);
+        const ok = await hash.verifyPassword(currentPassword, user.password_hash, user.password_salt);
         if (!ok) {
             return res.status(400).json({ error: 'Current password is incorrect.' });
         }
@@ -497,21 +494,15 @@ const resetPassword = async (req, res) => {
         let rsaPrivateKey;
         let eccPrivateKey;
         try {
-            rsaPrivateKey = keyManager.decryptPrivateKey(user.rsa_private_key_encrypted, currentPassword);
-            eccPrivateKey = keyManager.decryptPrivateKey(user.ecc_private_key_encrypted, currentPassword);
+            rsaPrivateKey = keyManager.decryptPrivateKey(user.rsa_private_key_encrypted);
+            eccPrivateKey = keyManager.decryptPrivateKey(user.ecc_private_key_encrypted);
         } catch (e) {
-            // Backward-compatibility fallback for earlier buggy key rotation that used temp_password.
-            try {
-                rsaPrivateKey = keyManager.decryptPrivateKey(user.rsa_private_key_encrypted, 'temp_password');
-                eccPrivateKey = keyManager.decryptPrivateKey(user.ecc_private_key_encrypted, 'temp_password');
-            } catch (fallbackErr) {
-                return res.status(500).json({ error: 'Failed to unlock existing keys for password reset.' });
-            }
+            return res.status(500).json({ error: 'Failed to unlock existing keys for password reset.' });
         }
 
-        const { hash: newHash, salt: newSalt } = hash.hashPassword(newPassword);
-        const newEncRsaPrivate = keyManager.encryptPrivateKey(rsaPrivateKey, newPassword);
-        const newEncEccPrivate = keyManager.encryptPrivateKey(eccPrivateKey, newPassword);
+        const { hash: newHash, salt: newSalt } = await hash.hashPassword(newPassword);
+        const newEncRsaPrivate = keyManager.encryptPrivateKey(rsaPrivateKey);
+        const newEncEccPrivate = keyManager.encryptPrivateKey(eccPrivateKey);
 
         await db.query(
             `UPDATE users SET password_hash = ?, password_salt = ?, rsa_private_key_encrypted = ?, ecc_private_key_encrypted = ?
@@ -529,7 +520,7 @@ const resetPassword = async (req, res) => {
 
         res.json({ message: 'Password reset successful. Please login again.' });
     } catch (error) {
-        console.error('Reset password error:', error);
+        logger.error({ err: error }, 'Reset password error');
         res.status(500).json({ error: 'Failed to reset password.' });
     }
 };
@@ -542,22 +533,34 @@ const deleteAccount = async (req, res) => {
         }
 
         const [users] = await db.query(
-            'SELECT password_hash, password_salt FROM users WHERE id = ?',
+            'SELECT password_hash, password_salt, avatar_cipher_path FROM users WHERE id = ?',
             [req.user.id]
         );
         if (users.length === 0) {
             return res.status(404).json({ error: 'User not found.' });
         }
-        const ok = hash.verifyPassword(password, users[0].password_hash, users[0].password_salt);
+        const ok = await hash.verifyPassword(password, users[0].password_hash, users[0].password_salt);
         if (!ok) {
             return res.status(400).json({ error: 'Invalid password.' });
+        }
+
+        if (users[0].avatar_cipher_path && fs.existsSync(users[0].avatar_cipher_path)) {
+            try {
+                fs.unlinkSync(users[0].avatar_cipher_path);
+            } catch {
+                /* ignore */
+            }
         }
 
         // Remove encrypted document files from disk first.
         const [docs] = await db.query('SELECT encrypted_file_path FROM documents WHERE user_id = ?', [req.user.id]);
         for (const doc of docs) {
             if (doc.encrypted_file_path && fs.existsSync(doc.encrypted_file_path)) {
-                try { fs.unlinkSync(doc.encrypted_file_path); } catch (_) {}
+                try {
+                    fs.unlinkSync(doc.encrypted_file_path);
+                } catch {
+                    /* ignore missing or locked files */
+                }
             }
         }
 
@@ -566,9 +569,118 @@ const deleteAccount = async (req, res) => {
 
         res.json({ message: 'Account deleted permanently.' });
     } catch (error) {
-        console.error('Delete account error:', error);
+        logger.error({ err: error }, 'Delete account error');
         res.status(500).json({ error: 'Failed to delete account.' });
     }
 };
 
-module.exports = { register, login, resendOTP, verify2FA, logout, getProfile, updateProfile, resetPassword, deleteAccount };
+const uploadAvatar = async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No image uploaded.' });
+        }
+        const base64 = req.file.buffer.toString('base64');
+        const mime = req.file.mimetype;
+        const fileHmac = avatarHmac.generateHMAC(base64);
+        const encryptedContent = encryptPostEnvelope(base64, systemKeys.getPublicKey());
+
+        const [existing] = await db.query('SELECT avatar_cipher_path FROM users WHERE id = ?', [req.user.id]);
+        if (
+            existing.length &&
+            existing[0].avatar_cipher_path &&
+            fs.existsSync(existing[0].avatar_cipher_path)
+        ) {
+            try {
+                fs.unlinkSync(existing[0].avatar_cipher_path);
+            } catch {
+                /* ignore */
+            }
+        }
+
+        const uploadDir = path.join(__dirname, '../uploads');
+        if (!fs.existsSync(uploadDir)) {
+            fs.mkdirSync(uploadDir, { recursive: true });
+        }
+        const encPath = path.join(uploadDir, `avatar_${req.user.id}_${Date.now()}.enc`);
+        fs.writeFileSync(encPath, encryptedContent);
+
+        await db.query(
+            'UPDATE users SET avatar_cipher_path = ?, avatar_hmac = ?, avatar_mime = ? WHERE id = ?',
+            [encPath, fileHmac, mime, req.user.id]
+        );
+        res.json({ message: 'Avatar updated.' });
+    } catch (error) {
+        logger.error({ err: error }, 'Avatar upload error');
+        res.status(500).json({ error: 'Failed to upload avatar.' });
+    }
+};
+
+const getAvatar = async (req, res) => {
+    try {
+        const uid = parseInt(req.params.userId, 10);
+        if (!uid) {
+            return res.status(400).json({ error: 'Invalid user.' });
+        }
+
+        const [rows] = await db.query(
+            'SELECT avatar_cipher_path, avatar_hmac, avatar_mime FROM users WHERE id = ?',
+            [uid]
+        );
+        if (rows.length === 0 || !rows[0].avatar_cipher_path) {
+            return res.status(404).json({ error: 'No avatar.' });
+        }
+        const row = rows[0];
+        if (!fs.existsSync(row.avatar_cipher_path)) {
+            return res.status(404).json({ error: 'Avatar file missing.' });
+        }
+        const encryptedContent = fs.readFileSync(row.avatar_cipher_path, 'utf8');
+        const decryptedBase64 = decryptStoredContent(encryptedContent, systemKeys.getPrivateKey());
+        if (!avatarHmac.verifyHMAC(decryptedBase64, row.avatar_hmac)) {
+            return res.status(400).json({ error: 'Avatar integrity check failed.' });
+        }
+        const buf = Buffer.from(decryptedBase64, 'base64');
+        res.setHeader('Content-Type', row.avatar_mime || 'image/jpeg');
+        res.setHeader('Cache-Control', 'private, max-age=120');
+        res.send(buf);
+    } catch (error) {
+        logger.error({ err: error }, 'Get avatar error');
+        res.status(500).json({ error: 'Failed to load avatar.' });
+    }
+};
+
+const deleteAvatar = async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT avatar_cipher_path FROM users WHERE id = ?', [req.user.id]);
+        if (rows.length && rows[0].avatar_cipher_path && fs.existsSync(rows[0].avatar_cipher_path)) {
+            try {
+                fs.unlinkSync(rows[0].avatar_cipher_path);
+            } catch {
+                /* ignore */
+            }
+        }
+        await db.query(
+            'UPDATE users SET avatar_cipher_path = NULL, avatar_hmac = NULL, avatar_mime = NULL WHERE id = ?',
+            [req.user.id]
+        );
+        res.json({ message: 'Avatar removed.' });
+    } catch (error) {
+        logger.error({ err: error }, 'Delete avatar error');
+        res.status(500).json({ error: 'Failed to remove avatar.' });
+    }
+};
+
+module.exports = {
+    register,
+    login,
+    resendOTP,
+    verify2FA,
+    logout,
+    getProfile,
+    updateProfile,
+    resetPassword,
+    deleteAccount,
+    uploadAvatar,
+    getAvatar,
+    deleteAvatar,
+    avatarUpload,
+};

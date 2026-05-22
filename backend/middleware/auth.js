@@ -1,6 +1,7 @@
 const db = require('../config/database');
 const tokenLib = require('../crypto/token');
 const HMAC = require('../crypto/hmac');
+const { problem } = require('./problemJson');
 
 const normalizeIp = (ip) => {
     if (!ip) return '';
@@ -27,7 +28,7 @@ const authMiddleware = async (req, res, next) => {
     const token = req.headers.authorization?.split(' ')[1] || req.cookies?.accessToken;
     
     if (!token) {
-        return res.status(401).json({ error: 'Access denied. No token provided.' });
+        return problem(res, 401, 'Unauthorized', 'Access denied. No token provided.', 'unauthorized');
     }
     
     try {
@@ -43,22 +44,22 @@ const authMiddleware = async (req, res, next) => {
         );
         
         if (sessions.length === 0) {
-            return res.status(401).json({ error: 'Session expired or invalid.' });
+            return problem(res, 401, 'Unauthorized', 'Session expired or invalid.', 'session-invalid');
         }
 
         const session = sessions[0];
         if (Number(session.user_id) !== Number(decoded.userId)) {
-            return res.status(401).json({ error: 'Session user mismatch.' });
+            return problem(res, 401, 'Unauthorized', 'Session user mismatch.', 'session-mismatch');
         }
 
         // Basic token-binding checks to reduce session hijacking risk.
         if (session.ip_address && currentIp && session.ip_address !== currentIp) {
             await db.query('DELETE FROM sessions WHERE id = ?', [session.id]);
-            return res.status(401).json({ error: 'Session validation failed (IP mismatch).' });
+            return problem(res, 401, 'Unauthorized', 'Session validation failed (IP mismatch).', 'session-binding');
         }
         if (session.user_agent && currentUa && session.user_agent !== currentUa) {
             await db.query('DELETE FROM sessions WHERE id = ?', [session.id]);
-            return res.status(401).json({ error: 'Session validation failed (device mismatch).' });
+            return problem(res, 401, 'Unauthorized', 'Session validation failed (device mismatch).', 'session-binding');
         }
         
         // Get user details
@@ -68,7 +69,7 @@ const authMiddleware = async (req, res, next) => {
         );
         
         if (users.length === 0) {
-            return res.status(401).json({ error: 'User not found.' });
+            return problem(res, 401, 'Unauthorized', 'User not found.', 'user-not-found');
         }
         
         req.user = users[0];
@@ -77,7 +78,7 @@ const authMiddleware = async (req, res, next) => {
         req.sessionTokenHash = tokenHash;
         next();
     } catch (error) {
-        return res.status(401).json({ error: 'Invalid token.' });
+        return problem(res, 401, 'Unauthorized', 'Invalid token.', 'invalid-token');
     }
 };
 
