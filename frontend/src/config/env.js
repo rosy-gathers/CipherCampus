@@ -1,0 +1,5 @@
+/**
+ * CRA exposes env vars prefixed with REACT_APP_ at build time.
+ */
+export const API_BASE_URL =
+    process.env.REACT_APP_API_URL || 'http://localhost:5000/api';

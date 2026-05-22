@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import axios from 'axios';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
+import api from '../services/api';
+import { getApiErrorMessage } from '../utils/apiError';
 
 const Login = () => {
     const [username, setUsername] = useState('');
@@ -29,7 +30,7 @@ const Login = () => {
         setLoading(true);
 
         try {
-            const response = await axios.post('http://localhost:5000/api/auth/login', {
+            const response = await api.post('/auth/login', {
                 username,
                 password
             });
@@ -41,7 +42,7 @@ const Login = () => {
                 setResendCountdown(response.data.resendInSeconds || 30);
             }
         } catch (err) {
-            setError(err.response?.data?.error || 'Login failed');
+            setError(getApiErrorMessage(err, 'Login failed'));
         } finally {
             setLoading(false);
         }
@@ -54,7 +55,7 @@ const Login = () => {
         setLoading(true);
 
         try {
-            const response = await axios.post('http://localhost:5000/api/auth/verify-2fa', {
+            const response = await api.post('/auth/verify-2fa', {
                 userId,
                 otp
             });
@@ -68,7 +69,7 @@ const Login = () => {
             }
             navigate('/dashboard');
         } catch (err) {
-            setError(err.response?.data?.error || 'Verification failed');
+            setError(getApiErrorMessage(err, 'Verification failed'));
         } finally {
             setLoading(false);
         }
@@ -83,13 +84,13 @@ const Login = () => {
             let response;
             try {
                 // Preferred path: dedicated resend endpoint with server-side cooldown.
-                response = await axios.post('http://localhost:5000/api/auth/resend-otp', {
+                response = await api.post('/auth/resend-otp', {
                     userId
                 });
             } catch (endpointError) {
                 // Backward-compat fallback for older backend process without /resend-otp route.
                 if (endpointError.response?.status === 404 || endpointError.response?.status === 405) {
-                    response = await axios.post('http://localhost:5000/api/auth/login', {
+                    response = await api.post('/auth/login', {
                         username,
                         password
                     });
@@ -108,7 +109,7 @@ const Login = () => {
             if (waitSeconds) {
                 setResendCountdown(waitSeconds);
             }
-            setError(err.response?.data?.error || 'Failed to resend OTP');
+            setError(getApiErrorMessage(err, 'Failed to resend OTP'));
         } finally {
             setLoading(false);
         }
@@ -121,50 +122,63 @@ const Login = () => {
                 <h2>Secure Academic Platform</h2>
                 
                 {step === 'credentials' ? (
-                    <form onSubmit={handleLogin}>
-                        <input
-                            type="text"
-                            placeholder="Username or Email"
-                            value={username}
-                            onChange={(e) => setUsername(e.target.value)}
-                            required
-                            autoComplete="username"
-                        />
-                        <input
-                            type="password"
-                            placeholder="Password"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            required
-                            autoComplete="current-password"
-                        />
+                    <form onSubmit={handleLogin} className="auth-form">
+                        <div className="field-group">
+                            <label htmlFor="login-username" className="form-label">Username or email</label>
+                            <input
+                                id="login-username"
+                                type="text"
+                                placeholder="e.g. student01"
+                                value={username}
+                                onChange={(e) => setUsername(e.target.value)}
+                                required
+                                autoComplete="username"
+                            />
+                        </div>
+                        <div className="field-group">
+                            <label htmlFor="login-password" className="form-label">Password</label>
+                            <input
+                                id="login-password"
+                                type="password"
+                                placeholder="••••••••"
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                required
+                                autoComplete="current-password"
+                            />
+                        </div>
                         <button type="submit" disabled={loading}>
                             {loading ? 'Logging in...' : 'Login'}
                         </button>
-                        <p>
-                            <a href="/register">Don't have an account? Register</a>
+                        <p className="auth-footer-link">
+                            <Link to="/register">Don&apos;t have an account? Register</Link>
                         </p>
                     </form>
                 ) : (
-                    <form onSubmit={handleVerifyOTP}>
+                    <form onSubmit={handleVerifyOTP} className="auth-form">
                         <h3>Two-Factor Authentication</h3>
                         <p className="otp-instruction">
                             Enter the 6-digit code sent to your email
                         </p>
-                        <input
-                            type="text"
-                            placeholder="Enter 6-digit OTP"
-                            value={otp}
-                            onChange={(e) => {
-                                // Only allow numbers and limit to 6 digits
-                                const value = e.target.value.replace(/[^0-9]/g, '').slice(0, 6);
-                                setOtp(value);
-                            }}
-                            required
-                            maxLength="6"
-                            pattern="[0-9]{6}"
-                            autoComplete="off"
-                        />
+                        <div className="field-group">
+                            <label htmlFor="login-otp" className="form-label">One-time code</label>
+                            <input
+                                id="login-otp"
+                                type="text"
+                                inputMode="numeric"
+                                placeholder="000000"
+                                value={otp}
+                                onChange={(e) => {
+                                    // Only allow numbers and limit to 6 digits
+                                    const value = e.target.value.replace(/[^0-9]/g, '').slice(0, 6);
+                                    setOtp(value);
+                                }}
+                                required
+                                maxLength="6"
+                                pattern="[0-9]{6}"
+                                autoComplete="one-time-code"
+                            />
+                        </div>
                         <button type="submit" disabled={loading || otp.length !== 6}>
                             {loading ? 'Verifying...' : 'Verify OTP'}
                         </button>
@@ -194,8 +208,16 @@ const Login = () => {
                     </form>
                 )}
                 
-                {error && <div className="error">{error}</div>}
-                {info && <div className="success">{info}</div>}
+                {error && (
+                    <div className="error" role="alert">
+                        {error}
+                    </div>
+                )}
+                {info && (
+                    <div className="success" role="status">
+                        {info}
+                    </div>
+                )}
             </div>
         </div>
     );

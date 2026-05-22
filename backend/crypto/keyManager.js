@@ -1,6 +1,7 @@
 const RSA = require('./rsa');
 const ECC = require('./ecc');
 const SecureHash = require('./hash');
+const systemKeys = require('./systemKeys');
 
 class KeyManager {
     constructor() {
@@ -30,24 +31,16 @@ class KeyManager {
         };
     }
     
-    // Simple XOR encryption for private keys (fast)
-    encryptPrivateKey(privateKey, password) {
-        const hash = this.hash.simpleHash(password);
+    // Wrap user private keys using asymmetric encryption (system RSA keypair).
+    // This keeps private key material encrypted at rest without symmetric wrapping.
+    encryptPrivateKey(privateKey) {
         const privateKeyStr = JSON.stringify(privateKey);
-        let encrypted = '';
-        for (let i = 0; i < privateKeyStr.length; i++) {
-            encrypted += String.fromCharCode(privateKeyStr.charCodeAt(i) ^ hash.charCodeAt(i % hash.length));
-        }
-        return encrypted;
+        return this.rsa.encrypt(privateKeyStr, systemKeys.getPublicKey());
     }
     
-    // Decrypt private key
-    decryptPrivateKey(encryptedKey, password) {
-        const hash = this.hash.simpleHash(password);
-        let decrypted = '';
-        for (let i = 0; i < encryptedKey.length; i++) {
-            decrypted += String.fromCharCode(encryptedKey.charCodeAt(i) ^ hash.charCodeAt(i % hash.length));
-        }
+    // Unwrap encrypted private key with system RSA private key.
+    decryptPrivateKey(encryptedKey) {
+        const decrypted = this.rsa.decrypt(encryptedKey, systemKeys.getPrivateKey());
         return JSON.parse(decrypted);
     }
     
@@ -80,7 +73,7 @@ class KeyManager {
         };
     }
     
-    rotateKeys(userId, currentKeys) {
+    rotateKeys(userId, _currentKeys) {
         const newKeys = this.generateUserKeys();
         return {
             newKeys,

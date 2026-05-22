@@ -4,21 +4,31 @@ const KeyManager = require('./crypto/keyManager');
 const RSA = require('./crypto/rsa');
 
 async function updateAdminCredentials() {
-    const targetEmail = 'your mail';
-    const targetPassword = 'your password';
+    const targetEmail = 'your-email@example.com';
+    const targetPassword = 'your-secure-password';
 
     const hash = new SecureHash();
     const keyManager = new KeyManager();
     const rsa = new RSA();
 
     try {
+        const targetEmailHash = hash.simpleHash(targetEmail.toLowerCase());
+        const [targetByEmail] = await db.query(
+            'SELECT id FROM users WHERE email = ? ORDER BY id ASC LIMIT 1',
+            [targetEmailHash]
+        );
+
         const [admins] = await db.query(
             'SELECT id FROM users WHERE role = ? ORDER BY id ASC LIMIT 1',
             ['admin']
         );
 
         let adminId;
-        if (admins.length === 0) {
+        if (targetByEmail.length > 0) {
+            adminId = Number(targetByEmail[0].id);
+            await db.query('UPDATE users SET role = ? WHERE id = ?', ['admin', adminId]);
+            console.log(`Using existing account with target email hash as admin (id=${adminId}).`);
+        } else if (admins.length === 0) {
             const [users] = await db.query('SELECT id FROM users ORDER BY id ASC LIMIT 1');
             if (users.length === 0) {
                 console.error('No users found. Register one account first, then run this script again.');
@@ -32,10 +42,9 @@ async function updateAdminCredentials() {
         }
         const keys = keyManager.generateUserKeys();
         const encryptedEmail = rsa.encrypt(targetEmail, keys.rsa.publicKey);
-        const emailHash = hash.simpleHash(targetEmail.toLowerCase());
-        const { hash: passwordHash, salt: passwordSalt } = hash.hashPassword(targetPassword);
-        const encryptedRSAPrivateKey = keyManager.encryptPrivateKey(keys.rsa.privateKey, targetPassword);
-        const encryptedECCPrivateKey = keyManager.encryptPrivateKey(keys.ecc.privateKey, targetPassword);
+        const { hash: passwordHash, salt: passwordSalt } = await hash.hashPassword(targetPassword);
+        const encryptedRSAPrivateKey = keyManager.encryptPrivateKey(keys.rsa.privateKey);
+        const encryptedECCPrivateKey = keyManager.encryptPrivateKey(keys.ecc.privateKey);
 
         await db.query(
             `UPDATE users
@@ -49,7 +58,7 @@ async function updateAdminCredentials() {
                  ecc_private_key_encrypted = ?
              WHERE id = ?`,
             [
-                emailHash,
+                targetEmailHash,
                 encryptedEmail,
                 passwordHash,
                 passwordSalt,

@@ -1,6 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
-import axios from 'axios';
+import api, { notificationAPI } from '../services/api';
+import { decodeJwtPayload } from '../utils/jwt';
+import UserAvatar from './UserAvatar';
 
 /**
  * Shared shell: sidebar nav + main area. Used after login.
@@ -11,6 +13,10 @@ const AppLayout = ({ children }) => {
     const location = useLocation();
     const [navOpen, setNavOpen] = useState(false);
     const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+    const [notifOpen, setNotifOpen] = useState(false);
+    const [notifItems, setNotifItems] = useState([]);
+    const [unreadCount, setUnreadCount] = useState(0);
+    const [avatarRev, setAvatarRev] = useState(0);
     const [sessionRemaining, setSessionRemaining] = useState(0);
     const user = JSON.parse(localStorage.getItem('user') || '{}');
 
@@ -36,10 +42,9 @@ const AppLayout = ({ children }) => {
             }
             const token = localStorage.getItem('token');
             if (!token) return 0;
-            const parts = token.split('.');
-            if (parts.length < 2) return 0;
-            const payload = JSON.parse(atob(parts[1]));
-            const exp = Number(payload?.exp || 0);
+            const payload = decodeJwtPayload(token);
+            if (!payload) return 0;
+            const exp = Number(payload.exp || 0);
             const now = Math.floor(Date.now() / 1000);
             return Math.max(0, exp - now);
         } catch (e) {
@@ -47,10 +52,37 @@ const AppLayout = ({ children }) => {
         }
     };
 
+    const fetchNotifications = useCallback(async () => {
+        try {
+            const res = await notificationAPI.list();
+            setNotifItems(res.data.items || []);
+            setUnreadCount(Number(res.data.unreadCount) || 0);
+        } catch {
+            /* ignore when offline or session edge cases */
+        }
+    }, []);
+
     useEffect(() => {
         setNavOpen(false);
         setProfileMenuOpen(false);
+        setNotifOpen(false);
     }, [location.pathname]);
+
+    useEffect(() => {
+        fetchNotifications();
+    }, [location.pathname, fetchNotifications]);
+
+    useEffect(() => {
+        fetchNotifications();
+        const t = setInterval(fetchNotifications, 30000);
+        return () => clearInterval(t);
+    }, [fetchNotifications]);
+
+    useEffect(() => {
+        const onAvatar = () => setAvatarRev((b) => b + 1);
+        window.addEventListener('ciphercampus-avatar-updated', onAvatar);
+        return () => window.removeEventListener('ciphercampus-avatar-updated', onAvatar);
+    }, []);
 
     useEffect(() => {
         const mq = window.matchMedia('(min-width: 961px)');
@@ -77,9 +109,7 @@ const AppLayout = ({ children }) => {
         try {
             const token = localStorage.getItem('token');
             if (token) {
-                await axios.post('http://localhost:5000/api/auth/logout', {}, {
-                    headers: { Authorization: `Bearer ${token}` }
-                });
+                await api.post('/auth/logout');
             }
         } catch (err) {
             console.error('Logout error:', err);
@@ -104,6 +134,23 @@ const AppLayout = ({ children }) => {
         }
     };
 
+    const handleNotifNavigate = async (n) => {
+        try {
+            if (!n.read) {
+                await notificationAPI.markRead(n.id);
+            }
+            setNotifOpen(false);
+            await fetchNotifications();
+            if (n.type === 'message') {
+                navigate('/messages');
+            } else if (n.type === 'document_share') {
+                navigate('/documents');
+            }
+        } catch {
+            /* ignore */
+        }
+    };
+
     return (
         <div className={`dashboard ${navOpen ? 'sidebar-visible' : ''}`}>
             <header className="mobile-topbar">
@@ -120,50 +167,102 @@ const AppLayout = ({ children }) => {
                     <span className="sr-only">Menu</span>
                 </button>
                 <span className="mobile-brand">CipherCampus</span>
-                <div style={{ position: 'relative' }}>
+                <div className="topbar-actions">
+                    <div className="notif-menu-anchor">
+                        <button
+                            type="button"
+                            className="notif-bell"
+                            aria-label="Notifications"
+                            aria-expanded={notifOpen}
+                            aria-haspopup="true"
+                            onClick={() => {
+                                setNotifOpen((v) => !v);
+                                setProfileMenuOpen(false);
+                                fetchNotifications();
+                            }}
+                        >
+                            <span aria-hidden>🔔</span>
+                            {unreadCount > 0 && (
+                                <span className="notif-badge">
+                                    {unreadCount > 9 ? '9+' : unreadCount}
+                                </span>
+                            )}
+                        </button>
+                        {notifOpen && (
+                            <div className="notif-panel" role="menu">
+                                <div className="notif-panel-head">
+                                    <span>Notifications</span>
+                                    <button
+                                        type="button"
+                                        className="notif-mark-all"
+                                        onClick={async () => {
+                                            try {
+                                                await notificationAPI.markAllRead();
+                                                await fetchNotifications();
+                                            } catch {
+                                                /* ignore */
+                                            }
+                                        }}
+                                    >
+                                        Mark all read
+                                    </button>
+                                </div>
+                                <div className="notif-list">
+                                    {notifItems.length === 0 && (
+                                        <div className="notif-empty">No notifications yet.</div>
+                                    )}
+                                    {notifItems.map((n) => (
+                                        <button
+                                            key={n.id}
+                                            type="button"
+                                            role="menuitem"
+                                            className={`notif-row ${n.read ? 'is-read' : ''}`}
+                                            onClick={() => handleNotifNavigate(n)}
+                                        >
+                                            <strong>{n.title}</strong>
+                                            {n.body && (
+                                                <span className="notif-body">{n.body}</span>
+                                            )}
+                                            <span className="notif-time">
+                                                {new Date(n.created_at).toLocaleString()}
+                                            </span>
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                    <div className="profile-menu-anchor">
                     <button
                         type="button"
                         className="mobile-user-chip"
                         title={user.username}
-                        onClick={() => setProfileMenuOpen((v) => !v)}
+                        aria-haspopup="true"
+                        aria-expanded={profileMenuOpen}
+                        aria-label="Account menu"
+                        onClick={() => {
+                            setProfileMenuOpen((v) => !v);
+                            setNotifOpen(false);
+                        }}
                     >
-                        {user.username.slice(0, 1).toUpperCase()}
+                        <UserAvatar userId={user.id} label={user.username} size={28} rev={avatarRev} />
                     </button>
                     {profileMenuOpen && (
-                        <div
-                            style={{
-                                position: 'absolute',
-                                right: 0,
-                                top: 'calc(100% + 8px)',
-                                background: '#fff',
-                                border: '1px solid #e9dff3',
-                                borderRadius: '10px',
-                                boxShadow: '0 10px 24px rgba(0,0,0,0.08)',
-                                padding: '8px',
-                                minWidth: '160px',
-                                zIndex: 2000
-                            }}
-                        >
+                        <div className="profile-menu-panel" role="menu">
                             <button
                                 type="button"
+                                className="profile-menu-item"
+                                role="menuitem"
                                 onClick={() => {
                                     setProfileMenuOpen(false);
                                     navigate('/profile');
                                 }}
-                                style={{
-                                    width: '100%',
-                                    textAlign: 'left',
-                                    background: 'transparent',
-                                    border: 'none',
-                                    padding: '8px 10px',
-                                    borderRadius: '8px',
-                                    cursor: 'pointer'
-                                }}
                             >
-                                👤 View Profile
+                                View profile
                             </button>
                         </div>
                     )}
+                    </div>
                 </div>
             </header>
 

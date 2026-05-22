@@ -8,8 +8,7 @@
 }
 
 body {
-    font-family: 'Nunito', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    background: linear-gradient(135deg, #fff0f5 0%, #fff9e6 100%);
+    font-family: 'Outfit', 'Nunito', 'Segoe UI', system-ui, sans-serif;
     min-height: 100vh;
 }
 
@@ -788,7 +787,8 @@ button:disabled {
     background: #fafafa;
 }
 
-.message-composer input {
+.message-composer input,
+.message-composer .message-composer-textarea {
     /* Override global input{width:100%}; otherwise the flex row hides the typing area */
     flex: 1 1 0%;
     width: auto !important;
@@ -801,6 +801,121 @@ button:disabled {
     border: 1px solid #ddd;
     font-size: 15px;
     box-sizing: border-box;
+    font-family: inherit;
+    resize: vertical;
+}
+
+.message-composer .message-composer-textarea {
+    min-height: 52px;
+    max-height: 160px;
+    line-height: 1.45;
+}
+
+.people-search-input {
+    width: 100%;
+    padding: 10px 12px;
+    margin: 0 0 10px;
+    border-radius: 10px;
+    border: 1px solid rgba(155, 123, 201, 0.35);
+    font-size: 14px;
+    box-sizing: border-box;
+}
+
+.people-picker-hint {
+    font-size: 12px;
+    color: #8c7b80;
+    margin: 0 0 8px;
+    text-align: left;
+}
+
+.people-picker-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 200px;
+    overflow-y: auto;
+    text-align: left;
+    border-radius: 10px;
+    border: 1px solid rgba(233, 236, 239, 0.9);
+    background: rgba(255, 255, 255, 0.6);
+}
+
+.people-picker-empty {
+    padding: 12px;
+    font-size: 13px;
+    color: #8c7b80;
+}
+
+.people-picker-item {
+    width: 100%;
+    margin: 0;
+    padding: 10px 14px;
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid #eee;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    color: #5c4d5c;
+    border-radius: 0;
+}
+
+.people-picker-item:hover {
+    background: rgba(255, 209, 220, 0.35);
+    transform: none;
+    box-shadow: none;
+}
+
+.document-share-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-top: 8px;
+}
+
+.document-share-row select {
+    flex: 1;
+    min-width: 120px;
+    margin: 0;
+    width: auto;
+}
+
+.share-btn,
+.revoke-share-btn {
+    width: auto;
+    padding: 8px 14px;
+    margin: 0;
+    font-size: 13px;
+    background: linear-gradient(135deg, #e8a0b8 0%, #c8e6c9 100%);
+    color: #4a3540;
+}
+
+.revoke-share-btn {
+    background: #6c757d;
+    color: #fff;
+}
+
+.doc-access-badge {
+    display: inline-block;
+    margin-top: 8px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.doc-access-owned {
+    background: #e3f2fd;
+    color: #1565c0;
+}
+
+.doc-access-shared {
+    background: #f3e5f5;
+    color: #6a1b9a;
 }
 
 .message-composer .send-btn {

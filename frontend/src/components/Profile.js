@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { authAPI } from '../services/api';
 import { useNavigate } from 'react-router-dom';
+import { getApiErrorMessage } from '../utils/apiError';
+import UserAvatar from './UserAvatar';
 
 const Profile = () => {
     const navigate = useNavigate();
@@ -23,6 +25,8 @@ const Profile = () => {
     const [saving, setSaving] = useState(false);
     const [savingPassword, setSavingPassword] = useState(false);
     const [deleting, setDeleting] = useState(false);
+    const [avatarBusy, setAvatarBusy] = useState(false);
+    const [avatarRev, setAvatarRev] = useState(0);
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
 
@@ -41,7 +45,7 @@ const Profile = () => {
             });
             setError('');
         } catch (err) {
-            setError(err.response?.data?.error || 'Failed to load profile.');
+            setError(getApiErrorMessage(err, 'Failed to load profile.'));
         } finally {
             setLoading(false);
         }
@@ -74,7 +78,7 @@ const Profile = () => {
             }));
             await loadProfile();
         } catch (err) {
-            setError(err.response?.data?.error || 'Failed to update profile.');
+            setError(getApiErrorMessage(err, 'Failed to update profile.'));
         } finally {
             setSaving(false);
         }
@@ -99,9 +103,47 @@ const Profile = () => {
             alert('Password reset successful. Please login again.');
             navigate('/login');
         } catch (err) {
-            setError(err.response?.data?.error || 'Failed to reset password.');
+            setError(getApiErrorMessage(err, 'Failed to reset password.'));
         } finally {
             setSavingPassword(false);
+        }
+    };
+
+    const handleAvatarChange = async (e) => {
+        const f = e.target.files?.[0];
+        if (!f) return;
+        setAvatarBusy(true);
+        setError('');
+        setSuccess('');
+        try {
+            await authAPI.uploadAvatar(f);
+            setSuccess('Avatar updated.');
+            setAvatarRev((r) => r + 1);
+            window.dispatchEvent(new Event('ciphercampus-avatar-updated'));
+            await loadProfile();
+        } catch (err) {
+            setError(getApiErrorMessage(err, 'Failed to upload avatar.'));
+        } finally {
+            setAvatarBusy(false);
+            e.target.value = '';
+        }
+    };
+
+    const handleRemoveAvatar = async () => {
+        if (!window.confirm('Remove your profile photo?')) return;
+        setAvatarBusy(true);
+        setError('');
+        setSuccess('');
+        try {
+            await authAPI.deleteAvatar();
+            setSuccess('Avatar removed.');
+            setAvatarRev((r) => r + 1);
+            window.dispatchEvent(new Event('ciphercampus-avatar-updated'));
+            await loadProfile();
+        } catch (err) {
+            setError(getApiErrorMessage(err, 'Failed to remove avatar.'));
+        } finally {
+            setAvatarBusy(false);
         }
     };
 
@@ -122,7 +164,7 @@ const Profile = () => {
             localStorage.removeItem('user');
             navigate('/login');
         } catch (err) {
-            setError(err.response?.data?.error || 'Failed to delete account.');
+            setError(getApiErrorMessage(err, 'Failed to delete account.'));
         } finally {
             setDeleting(false);
         }
@@ -140,6 +182,40 @@ const Profile = () => {
                     View and update your profile. Data is encrypted before storage and decrypted on retrieval.
                 </p>
             </div>
+
+            {profile && (
+                <div className="create-post card-surface profile-avatar-card">
+                    <h3>Profile photo</h3>
+                    <p className="profile-avatar-hint">
+                        Stored with the same hybrid envelope as feed content; only signed-in users can load your
+                        image.
+                    </p>
+                    <div className="profile-avatar-row">
+                        <UserAvatar userId={profile.id} label={profile.username} size={72} rev={avatarRev} />
+                        <div className="profile-avatar-actions">
+                            <label className="profile-avatar-file-label">
+                                <input
+                                    type="file"
+                                    accept="image/jpeg,image/png,image/gif,image/webp"
+                                    onChange={handleAvatarChange}
+                                    disabled={avatarBusy}
+                                />
+                                <span>{avatarBusy ? 'Working…' : 'Choose image'}</span>
+                            </label>
+                            {profile.hasAvatar && (
+                                <button
+                                    type="button"
+                                    onClick={handleRemoveAvatar}
+                                    disabled={avatarBusy}
+                                    className="profile-avatar-remove"
+                                >
+                                    Remove photo
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <div className="create-post card-surface">
                 <h3>Profile information</h3>
@@ -194,7 +270,11 @@ const Profile = () => {
                     </div>
                 )}
 
-                {error && <div className="error">{error}</div>}
+                {error && (
+                    <div className="error" role="alert">
+                        {error}
+                    </div>
+                )}
                 {success && <div className="success">{success}</div>}
             </div>
 

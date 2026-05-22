@@ -1,23 +1,12 @@
 const db = require('../config/database');
 const ECC = require('../crypto/ecc');
 const HMAC = require('../crypto/hmac');
-const RSA = require('../crypto/rsa');
 const sessionVault = require('../crypto/sessionVault');
-const systemKeys = require('../crypto/systemKeys');
+const { usernameFromRow } = require('../utils/usernameDisplay');
+const { notify } = require('../services/notificationService');
 
 const ecc = new ECC();
 const hmac = new HMAC('ciphercampus_secret_key_for_hmac');
-const rsa = new RSA();
-
-/** Display names for feeds/chat match posts: usernames are encrypted with the system RSA key. */
-function usernameFromRow(encryptedUsername, userId) {
-    if (!encryptedUsername) return `User ${userId}`;
-    try {
-        return rsa.decrypt(encryptedUsername, systemKeys.getPrivateKey());
-    } catch (e) {
-        return `User ${userId}`;
-    }
-}
 
 /**
  * Store ciphertext as base64 so MySQL/JSON never truncates on NUL bytes or binary-looking chars.
@@ -101,6 +90,20 @@ const sendMessage = async (req, res) => {
             'INSERT INTO messages (sender_id, receiver_id, encrypted_message, message_hmac) VALUES (?, ?, ?, ?)',
             [senderId, receiverId, payload, messageHMAC]
         );
+
+        try {
+            const [snd] = await db.query('SELECT encrypted_username FROM users WHERE id = ?', [senderId]);
+            const name = usernameFromRow(snd[0]?.encrypted_username, senderId);
+            await notify(
+                parseInt(receiverId, 10),
+                'message',
+                'New message',
+                `${name} sent you a message.`,
+                { fromUserId: senderId }
+            );
+        } catch (e) {
+            console.error('Notification (message) failed:', e);
+        }
 
         res.status(201).json({ message: 'Message sent successfully.' });
     } catch (error) {
