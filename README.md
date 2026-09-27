@@ -1,10 +1,6 @@
 # CipherCampus — secure academic collaboration
 
-**Live demo:** set `PUBLIC_DEMO_URL` in your deployment and replace the placeholder below after you ship.
 
-- **Demo:** `https://your-demo.example.com` (placeholder — see [docs/DEPLOY.md](docs/DEPLOY.md))
-- **API docs (Swagger UI):** `{API_ORIGIN}/api/docs` when the backend is running
-- **Health / readiness:** `GET /api/health` (liveness), `GET /api/ready` (MySQL + optional Redis)
 
 CipherCampus is a full-stack **secure academic collaboration** app: registration, password + email OTP, encrypted profile fields, an integrity-checked feed, messaging, a document vault, and admin RBAC. It started as coursework (CSE447) and is structured so you can **demo it like a product** and **defend the design** in interviews without over-claiming security.
 
