@@ -112,16 +112,9 @@ Docker (MySQL + Redis + API + nginx frontend): `docker compose up --build` from 
 
 Full contract: [docs/openapi.yaml](docs/openapi.yaml). Many errors use **RFC 7807** `application/problem+json` with an **`error` field** mirroring `detail` for older clients.
 
-## Limitations (say this plainly)
+## Limitations 
 
 - This is a **portfolio-grade** system, not a compliance-certified product. A compromised host or malicious insider with API access defeats most app-layer goals.
 - Custom RSA/ECC code demonstrates coursework goals; **production secrecy for bulk data** is centered on **standard primitives** (AES-GCM, Argon2, JWT) as described in ARCHITECTURE.
 - Email OTP depends on SMTP configuration; use app passwords and never commit secrets.
 
-## Team / credits
-
-CipherCampus — CSE447 lab project. Update with your names and course IDs.
-
-## License
-
-Use your course or team license as appropriate.
