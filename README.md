@@ -34,10 +34,6 @@ Security operations checklist: **[docs/SECURITY.md](docs/SECURITY.md)**
 Deployment (HTTPS, env, platforms, Docker): **[docs/DEPLOY.md](docs/DEPLOY.md)**  
 Render starter blueprint: **[render.yaml](render.yaml)**
 
-## Demo assets (for recruiters)
-
-1. **Short screen recording (60–90s):** register → OTP → create tagged post → upload to a folder → share a file → notification bell.
-2. **Screenshots:** add 3–5 PNGs under `docs/screenshots/` (login, feed, vault, messages, profile). Commit images when you have them.
 
 ## Tech stack
 
